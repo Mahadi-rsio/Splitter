@@ -443,6 +443,18 @@ importers:
         specifier: ^0.31.10
         version: 0.31.10
 
+  packages/split-deploy:
+    devDependencies:
+      '@types/node':
+        specifier: 'catalog:'
+        version: 25.9.5
+      tsx:
+        specifier: 'catalog:'
+        version: 4.23.1
+      typescript:
+        specifier: ~5.9.3
+        version: 5.9.3
+
   scripts:
     devDependencies:
       '@types/node':
