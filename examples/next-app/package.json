@@ -2,11 +2,16 @@
   "name": "split-deploy-next-example",
   "private": true,
   "scripts": {
-    "build": "next build"
+    "build": "next build",
+    "dev": "next dev"
   },
   "dependencies": {
     "next": "15.5.0",
     "react": "19.1.0",
     "react-dom": "19.1.0"
+  },
+  "devDependencies": {
+    "@types/node": "26.2.0",
+    "@types/react": "19.2.18"
   }
 }

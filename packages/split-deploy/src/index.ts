@@ -1,7 +1,10 @@
 export { analyzeOpenNext, summarizeAnalysis } from "./analyze.js";
+export { BLOCKED_MODULES, hasBlockedDependency, isBlockedModule, NATIVE_PACKAGES } from "./blocked-modules.js";
 export { classifyRoute } from "./classify.js";
 export { copySplitArtifacts } from "./copy.js";
+export { buildDependencyGraph, filesForEntry, findSharedChunks } from "./dependency-graph.js";
 export { scanJavaScriptDependencies } from "./imports.js";
 export { readOpenNextBuild } from "./reader.js";
 export { detectRoutes } from "./routes.js";
+export { validateSplitOutput } from "./validator.js";
 export type * from "./types.js";

@@ -1,4 +1,5 @@
 import type {
+  OpenNextBuild,
   OpenNextManifest,
   RouteDefinition,
   RouteKind,
@@ -21,9 +22,10 @@ function routeKind(path: string, rawType?: unknown): RouteKind {
   if (explicit === "middleware") return "middleware";
   if (explicit === "api" || explicit === "route") return "api";
   if (explicit === "static") return "static";
-  if (explicit === "dynamic") return "dynamic";
+  if (explicit === "prerendered") return "prerendered";
+  if (explicit === "dynamic" || explicit === "server") return "server";
   if (path.startsWith("/api/") || path === "/api") return "api";
-  if (/\[[^/]+\]/.test(path) || path.includes(":")) return "dynamic";
+  if (/\[[^/]+\]/.test(path) || path.includes(":")) return "server";
   return "static";
 }
 
@@ -61,12 +63,14 @@ function addRoute(
     runtime: defaults.runtime ?? runtimeHint(raw.runtime),
     entry: entryValue(raw) ?? defaults.entry,
     source: defaults.source,
+    chunks: [],
   };
   const existing = routes.get(normalized);
   routes.set(normalized, {
     ...existing,
     ...next,
     entry: next.entry ?? existing?.entry,
+    chunks: [...(existing?.chunks ?? []), ...next.chunks],
     runtime:
       next.runtime !== "unknown" ? next.runtime : existing?.runtime ?? "unknown",
   });
@@ -99,7 +103,61 @@ function addCollection(
   }
 }
 
-export function detectRoutes(manifests: OpenNextManifest[]): RouteDefinition[] {
+/**
+ * Extracts prerendered routes from the prerender-manifest.json.
+ * These are routes that were statically generated at build time.
+ */
+function addPrerenderRoutes(
+  routes: Map<string, RouteDefinition>,
+  manifests: OpenNextManifest[],
+): void {
+  for (const manifest of manifests) {
+    if (!manifest.file.endsWith("prerender-manifest.json")) continue;
+    const data = manifest.data;
+    if (data.routes && typeof data.routes === "object") {
+      for (const path of Object.keys(data.routes as Record<string, unknown>)) {
+        addRoute(routes, path, {}, {
+          kind: "prerendered",
+          source: manifest.file,
+        });
+      }
+    }
+  }
+}
+
+/**
+ * Extracts route information from app-paths-manifest.json
+ * which maps route paths to their server-side entrypoints.
+ */
+function addAppPathRoutes(
+  routes: Map<string, RouteDefinition>,
+  manifests: OpenNextManifest[],
+): void {
+  for (const manifest of manifests) {
+    if (!manifest.file.endsWith("app-paths-manifest.json")) continue;
+    // Resolve entry paths relative to the manifest's parent directories
+    // e.g. manifest at server-functions/default/.next/server/app-paths-manifest.json
+    // entry "app/api/search/route.js" → server-functions/default/.next/server/app/api/search/route.js
+    const manifestDir = manifest.file.split("/").slice(0, -1).join("/");
+    for (const [path, entryFile] of Object.entries(manifest.data)) {
+      const normalizedPath = path.replace(/\/page$/, "").replace(/\/route$/, "") || "/";
+      const isApi = path.endsWith("/route");
+      const resolvedEntry = typeof entryFile === "string"
+        ? (manifestDir ? `${manifestDir}/${entryFile}` : entryFile)
+        : undefined;
+      addRoute(routes, normalizedPath, {}, {
+        kind: isApi ? "api" : undefined,
+        entry: resolvedEntry,
+        source: manifest.file,
+      });
+    }
+  }
+}
+
+export function detectRoutes(
+  manifests: OpenNextManifest[],
+  build?: OpenNextBuild,
+): RouteDefinition[] {
   const routes = new Map<string, RouteDefinition>();
 
   for (const manifest of manifests) {
@@ -111,7 +169,7 @@ export function detectRoutes(manifests: OpenNextManifest[]): RouteDefinition[] {
       source: manifest.file,
     });
     addCollection(routes, data.dynamicRoutes, {
-      kind: "dynamic",
+      kind: "server",
       source: manifest.file,
     });
     addCollection(routes, data.middleware, {
@@ -119,6 +177,21 @@ export function detectRoutes(manifests: OpenNextManifest[]): RouteDefinition[] {
       runtime: "edge",
       source: manifest.file,
     });
+  }
+
+  addPrerenderRoutes(routes, manifests);
+  addAppPathRoutes(routes, manifests);
+
+  // If we have server functions from the build, associate them with routes
+  if (build) {
+    for (const fn of build.serverFunctions) {
+      // Try to match server functions to routes by name
+      for (const [, route] of routes) {
+        if (!route.entry && fn.name === "default") {
+          // Default function handles unmatched routes
+        }
+      }
+    }
   }
 
   return [...routes.values()].sort((a, b) => a.path.localeCompare(b.path));

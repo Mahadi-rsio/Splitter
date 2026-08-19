@@ -4,39 +4,49 @@ import {
   readFileSync,
   readdirSync,
 } from "node:fs";
-import { dirname, extname, join, normalize, relative, sep } from "node:path";
+import { dirname, extname, join, normalize, sep } from "node:path";
 import type { DependencyScan } from "./types.js";
 
 const JAVASCRIPT_EXTENSIONS = [".js", ".mjs", ".cjs"];
 const RESOLUTION_EXTENSIONS = [...JAVASCRIPT_EXTENSIONS, ".json", ".wasm"];
 const NODE_BUILTINS = new Set([
   "assert",
+  "async_hooks",
   "buffer",
   "child_process",
   "cluster",
+  "console",
   "crypto",
   "dgram",
+  "diagnostics_channel",
   "dns",
   "events",
   "fs",
   "http",
+  "http2",
   "https",
+  "inspector",
   "module",
   "net",
   "os",
   "path",
   "perf_hooks",
   "process",
+  "punycode",
+  "querystring",
   "readline",
+  "repl",
   "stream",
   "string_decoder",
   "timers",
   "tls",
+  "trace_events",
   "tty",
   "url",
   "util",
   "v8",
   "vm",
+  "wasi",
   "worker_threads",
   "zlib",
 ]);
@@ -62,15 +72,10 @@ function collectDirectoryFiles(root: string, directory: string): string[] {
   return files;
 }
 
-function moduleName(importPath: string): string {
-  if (importPath.startsWith("node:")) return importPath.slice(5).split("/")[0];
-  return importPath.split("/")[0].startsWith("@")
-    ? importPath.split("/").slice(0, 2).join("/")
-    : importPath.split("/")[0];
-}
-
 function isNodeBuiltin(importPath: string): boolean {
-  return NODE_BUILTINS.has(moduleName(importPath));
+  if (importPath.startsWith("node:")) return true;
+  const name = importPath.split("/")[0];
+  return NODE_BUILTINS.has(name);
 }
 
 function importsFrom(source: string): string[] {
@@ -89,12 +94,16 @@ function importsFrom(source: string): string[] {
   return [...imports];
 }
 
-function resolveRelativeImport(root: string, fromFile: string, request: string): string | undefined {
+function resolveRelativeImport(
+  root: string,
+  fromFile: string,
+  request: string,
+): string | undefined {
   const base = normalize(join(dirname(fromFile), request));
   const candidates = [
     base,
-    ...RESOLUTION_EXTENSIONS.map((extension) => `${base}${extension}`),
-    ...RESOLUTION_EXTENSIONS.map((extension) => join(base, `index${extension}`)),
+    ...RESOLUTION_EXTENSIONS.map((ext) => `${base}${ext}`),
+    ...RESOLUTION_EXTENSIONS.map((ext) => join(base, `index${ext}`)),
   ];
   for (const candidate of candidates) {
     const absolute = join(root, candidate);
@@ -106,16 +115,18 @@ function resolveRelativeImport(root: string, fromFile: string, request: string):
 }
 
 /**
- * Scans bundled JavaScript without executing it. Relative imports are resolved
- * into the build output; package and Node imports are retained as metadata.
+ * Scans bundled JavaScript without executing it. Builds a transitive
+ * dependency graph by following relative imports and recording external
+ * package references and Node built-in usage.
  */
 export function scanJavaScriptDependencies(
   root: string,
   entry: string,
 ): DependencyScan {
-  const roots = existsSync(join(root, entry)) && lstatSync(join(root, entry)).isDirectory()
-    ? collectDirectoryFiles(root, entry)
-    : [toPosix(entry)];
+  const roots =
+    existsSync(join(root, entry)) && lstatSync(join(root, entry)).isDirectory()
+      ? collectDirectoryFiles(root, entry)
+      : [toPosix(entry)];
   const files = new Set<string>();
   const externalImports = new Set<string>();
   const nodeBuiltins = new Set<string>();
@@ -130,7 +141,9 @@ export function scanJavaScriptDependencies(
     const source = readFileSync(join(root, file), "utf8");
     for (const request of importsFrom(source)) {
       if (isNodeBuiltin(request)) {
-        nodeBuiltins.add(request.startsWith("node:") ? request : `node:${request}`);
+        nodeBuiltins.add(
+          request.startsWith("node:") ? request : `node:${request}`,
+        );
       } else if (request.startsWith(".") || request.startsWith("/")) {
         const resolved = resolveRelativeImport(root, file, request);
         if (resolved && !files.has(resolved)) pending.push(resolved);
@@ -142,7 +155,7 @@ export function scanJavaScriptDependencies(
   }
 
   return {
-    entry: toPosix(relative(root, join(root, entry))),
+    entry: toPosix(entry),
     files: [...files].sort(),
     externalImports: [...externalImports].sort(),
     nodeBuiltins: [...nodeBuiltins].sort(),

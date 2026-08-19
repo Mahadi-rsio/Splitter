@@ -7,6 +7,7 @@ import { detectRoutes } from "./routes.js";
 import type {
   ArtifactTarget,
   BuildAnalysis,
+  ClassifiedRoute,
   DependencyScan,
   RouteDefinition,
 } from "./types.js";
@@ -29,23 +30,15 @@ function scanIfPresent(
   return scanJavaScriptDependencies(root, entry);
 }
 
-function routeWithScan(
-  root: string,
-  route: RouteDefinition,
-  warnings: string[],
-): { route: RouteDefinition; scan?: DependencyScan } {
-  const scan = route.entry ? scanIfPresent(root, route.entry, warnings) : undefined;
-  return { route, scan };
-}
-
 /**
- * Produces a deterministic split plan. No files are written by this function.
+ * Produces a deterministic split plan from an OpenNext build output.
+ * No files are written — this is a pure analysis step.
  */
 export function analyzeOpenNext(inputDir = ".open-next"): BuildAnalysis {
   const root = resolve(inputDir);
   const build = readOpenNextBuild(root);
   const warnings: string[] = [];
-  const routes = detectRoutes(build.manifests);
+  const routes = detectRoutes(build.manifests, build);
   const files: Record<ArtifactTarget, Set<string>> = {
     cdn: new Set(build.assetFiles),
     worker: new Set(),
@@ -57,16 +50,23 @@ export function analyzeOpenNext(inputDir = ".open-next"): BuildAnalysis {
     lambda: new Set(),
   };
   const dependencyScans: DependencyScan[] = [];
-  const classifiedRoutes = [];
+  const classifiedRoutes: ClassifiedRoute[] = [];
 
   for (const route of routes) {
-    const result = routeWithScan(root, route, warnings);
-    const target = classifyRoute(route, result.scan);
-    classifiedRoutes.push({ ...route, target, dependencyScan: result.scan });
-    if (result.scan) {
-      dependencyScans.push(result.scan);
-      addUnique(files[target], result.scan.files);
-      if (route.entry) entries[target].add(route.entry);
+    let scan: DependencyScan | undefined;
+    if (route.entry) {
+      scan = scanIfPresent(root, route.entry, warnings);
+    }
+    const target = classifyRoute(route, scan);
+    classifiedRoutes.push({ ...route, target, dependencyScan: scan });
+    if (scan) {
+      dependencyScans.push(scan);
+      // CDN routes are static/prerendered — their server-side entry files
+      // belong to Lambda (the SSR fallback), not to the CDN artifact.
+      if (target !== "cdn") {
+        addUnique(files[target], scan.files);
+        if (route.entry) entries[target].add(route.entry);
+      }
     }
   }
 
@@ -79,6 +79,7 @@ export function analyzeOpenNext(inputDir = ".open-next"): BuildAnalysis {
   }
 
   for (const entry of build.lambdaEntries) {
+    if (entries.worker.has(entry)) continue;
     const scan = scanIfPresent(root, entry, warnings);
     if (!scan) continue;
     entries.lambda.add(entry);
@@ -86,17 +87,16 @@ export function analyzeOpenNext(inputDir = ".open-next"): BuildAnalysis {
     addUnique(files.lambda, scan.files);
   }
 
-  if (!build.manifests.some(({ file }) => file.endsWith("routes-manifest.json"))) {
-    warnings.push("No routes-manifest.json found; only conventional OpenNext entries were classified.");
+  // Also collect server function bundles as whole directories for Lambda
+  for (const fn of build.serverFunctions) {
+    if (!entries.lambda.has(fn.entrypoint) && !entries.worker.has(fn.entrypoint)) {
+      entries.lambda.add(fn.entrypoint);
+      addUnique(files.lambda, fn.files);
+    }
   }
+
   if (build.assetFiles.length === 0) {
     warnings.push("No CDN asset directory found (expected assets/, static/, or public/).");
-  }
-  if (build.workerEntries.length === 0) {
-    warnings.push("No worker entry found (expected worker.js, middleware.js, or middleware/).");
-  }
-  if (build.lambdaEntries.length === 0) {
-    warnings.push("No server function entry found under server-functions/.");
   }
 
   return {
@@ -115,25 +115,30 @@ export function analyzeOpenNext(inputDir = ".open-next"): BuildAnalysis {
 }
 
 export function summarizeAnalysis(analysis: BuildAnalysis): string {
-  const lines = [
-    `OpenNext build: ${analysis.inputDir}`,
-    `Routes: ${analysis.routes.length}`,
-    `CDN files: ${analysis.files.cdn.length}`,
-    `Worker files: ${analysis.files.worker.length}`,
-    `Lambda files: ${analysis.files.lambda.length}`,
-    "",
-    "Routes by target:",
-  ];
+  const lines: string[] = [];
+
+  lines.push("Routes\n");
+
   for (const target of TARGETS) {
-    const targetRoutes = analysis.routes.filter((route) => route.target === target);
-    lines.push(`  ${target}: ${targetRoutes.length}`);
+    const targetRoutes = analysis.routes.filter((r) => r.target === target);
+    if (targetRoutes.length === 0) continue;
+    lines.push(`  ${target.toUpperCase()}`);
     for (const route of targetRoutes) {
-      lines.push(`    ${route.path} (${route.kind}, ${route.runtime})`);
+      const deps = route.dependencyScan;
+      let suffix = "";
+      if (deps && deps.nodeBuiltins.length > 0) {
+        suffix = `  (${deps.nodeBuiltins.join(", ")})`;
+      }
+      lines.push(`    ${route.path}${suffix}`);
     }
+    lines.push("");
   }
+
   if (analysis.warnings.length > 0) {
-    lines.push("", "Warnings:");
-    for (const warning of analysis.warnings) lines.push(`  - ${warning}`);
+    lines.push("Warnings:");
+    for (const w of analysis.warnings) lines.push(`  - ${w}`);
+    lines.push("");
   }
+
   return lines.join("\n");
 }
