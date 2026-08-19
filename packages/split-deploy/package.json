@@ -12,6 +12,9 @@
     "split-deploy": "tsx src/cli.ts",
     "test": "tsx --test src/**/*.test.ts"
   },
+  "dependencies": {
+    "esbuild": "0.27.3"
+  },
   "devDependencies": {
     "@types/node": "catalog:",
     "tsx": "catalog:",

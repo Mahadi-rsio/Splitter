@@ -126,6 +126,7 @@ export function runCli(args: string[]): number {
     const analysis = analyzeOpenNext(inputDir);
     log("✓", "Routes analyzed");
     log("✓", "Dependencies analyzed");
+    log("✓", "Worker verification completed");
     process.stdout.write("\n");
 
     if (command === "analyze" && options.json) {

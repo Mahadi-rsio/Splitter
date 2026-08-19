@@ -63,39 +63,57 @@ function isJavaScript(file: string): boolean {
 }
 
 function detectServerFunctions(root: string, files: string[]): ServerFunction[] {
-  const serverFunctionsDir = "server-functions";
-  if (!existsSync(join(root, serverFunctionsDir))) return [];
-
-  const subdirs = readdirSync(join(root, serverFunctionsDir), { withFileTypes: true })
-    .filter((d) => d.isDirectory())
-    .map((d) => d.name);
-
   const functions: ServerFunction[] = [];
-  for (const name of subdirs) {
-    const directory = `${serverFunctionsDir}/${name}`;
-    const entrypoint = [`${directory}/index.mjs`, `${directory}/index.js`]
-      .find((f) => files.includes(f));
-    if (!entrypoint) continue;
 
-    const fnFiles = files.filter((f) => f.startsWith(`${directory}/`));
-    functions.push({ name, directory, entrypoint, files: fnFiles });
+  // OpenNext function directories: server-functions/, image-optimization-function/,
+  // revalidation-function/, warmer-function/, tag-manifest-function/.
+  const functionDirs = ["server-functions", "image-optimization-function", "revalidation-function", "warmer-function", "tag-manifest-function"];
+  for (const dir of functionDirs) {
+    if (!existsSync(join(root, dir))) continue;
+
+    // Flat function (e.g. image-optimization-function with index.mjs at root).
+    const flatEntry = [`${dir}/index.mjs`, `${dir}/index.js`]
+      .find((f) => files.includes(f));
+    if (flatEntry) {
+      functions.push({
+        name: dir,
+        directory: dir,
+        entrypoint: flatEntry,
+        files: files.filter((f) => f.startsWith(`${dir}/`)),
+      });
+      continue;
+    }
+
+    const subdirs = readdirSync(join(root, dir), { withFileTypes: true })
+      .filter((d) => d.isDirectory())
+      .map((d) => d.name);
+
+    for (const name of subdirs) {
+      const directory = `${dir}/${name}`;
+      const entrypoint = [`${directory}/index.mjs`, `${directory}/index.js`]
+        .find((f) => files.includes(f));
+      if (!entrypoint) continue;
+
+      const fnFiles = files.filter((f) => f.startsWith(`${directory}/`));
+      functions.push({ name, directory, entrypoint, files: fnFiles });
+    }
   }
 
   // Also check for flat entries (e.g. server-functions/default.js without a subdirectory)
   const flatEntries = files.filter(
     (f) =>
-      f.startsWith(`${serverFunctionsDir}/`) &&
-      !f.includes("/", serverFunctionsDir.length + 1) &&
+      f.startsWith(`server-functions/`) &&
+      !f.includes("/", "server-functions".length + 1) &&
       isJavaScript(f),
   );
   for (const entry of flatEntries) {
     const name = entry
-      .slice(serverFunctionsDir.length + 1)
+      .slice("server-functions".length + 1)
       .replace(/\.(m?js|cjs)$/, "");
     if (functions.some((fn) => fn.name === name)) continue;
     functions.push({
       name,
-      directory: serverFunctionsDir,
+      directory: "server-functions",
       entrypoint: entry,
       files: [entry],
     });
@@ -140,6 +158,7 @@ export function readOpenNextBuild(inputDir: string): OpenNextBuild {
   );
 
   const workerEntries = files.filter((file) => {
+    if (file.includes("/node_modules/")) return false;
     const basename = file.split("/").at(-1) ?? "";
     return (
       WORKER_FILE_NAMES.has(basename) ||

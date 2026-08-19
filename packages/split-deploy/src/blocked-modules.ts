@@ -1,700 +1,335 @@
 /**
- * Modules/packages that should be treated as Node.js-only or
- * high-risk for a Workers/edge runtime.
+ * Runtime-compatibility classification for Node builtins and npm packages.
  *
- * IMPORTANT:
- * This is a safety-oriented denylist, not a complete compatibility proof.
- * A package not present here may still fail in Workers.
+ * The meaning of a "blocked" module is: Worker-incompatible → Lambda candidate.
+ * It does NOT mean the package should be deleted — the full dependency closure
+ * must follow the route into Lambda.
+ *
+ * Categories:
+ *  - HARD BLOCKED   definitely unsafe for Workers (native/server-only APIs)
+ *  - RISKY          require actual dependency/bundle analysis; never auto-blocked
+ *  - SAFE           pure JavaScript — never block
+ *  - FRAMEWORK      platform-provided runtime (next, react, ...) — externalized
+ *  - NATIVE         known native/Node-only packages (subset of hard blocked)
  */
-
-/* -------------------------------------------------------------------------- */
-/* Node.js built-in modules                                                   */
-/* -------------------------------------------------------------------------- */
-
-export const BLOCKED_NODE_BUILTINS = new Set([
-  // Core filesystem
-  "fs",
-  "fs/promises",
-  "node:fs",
-  "node:fs/promises",
-
-  // Process / OS
-  "process",
-  "node:process",
-  "os",
-  "node:os",
-  "child_process",
-  "node:child_process",
-
-  // Networking
-  "net",
-  "node:net",
-  "tls",
-  "node:tls",
-  "dgram",
-  "node:dgram",
-  "dns",
-  "node:dns",
-  "dns/promises",
-  "node:dns/promises",
-  "http",
-  "node:http",
-  "https",
-  "node:https",
-  "http2",
-  "node:http2",
-
-  // Cluster / workers
-  "cluster",
-  "node:cluster",
-  "worker_threads",
-  "node:worker_threads",
-
-  // Native / low-level
-  "inspector",
-  "node:inspector",
-  "repl",
-  "node:repl",
-  "readline",
-  "node:readline",
-  "readline/promises",
-  "node:readline/promises",
-
-  // TTY / terminal
-  "tty",
-  "node:tty",
-
-  // VM / V8 internals
-  "vm",
-  "node:vm",
-  "v8",
-  "node:v8",
-
-  // Module loading / internals
-  "module",
-  "node:module",
-  "constants",
-  "node:constants",
-
-  // Native bindings / FFI
-  "ffi",
-  "node:ffi",
-  "ffi-napi",
-  "node-gyp",
-
-  // Unix / system interfaces
-  "sys",
-  "node:sys",
-  "syslog",
-  "node:syslog",
-
-  // Performance / tracing
-  "perf_hooks",
-  "node:perf_hooks",
-  "async_hooks",
-  "node:async_hooks",
-  "trace_events",
-  "node:trace_events",
-
-  // HTTP diagnostics
-  "diagnostics_channel",
-  "node:diagnostics_channel",
-
-  // WASI / native execution
-  "wasi",
-  "node:wasi",
-
-  // SQLite / database related built-ins where applicable
-  "sqlite",
-  "node:sqlite",
-]);
-
-/* -------------------------------------------------------------------------- */
-/* Native Node.js addons / packages                                           */
-/* -------------------------------------------------------------------------- */
+import type { BlockReason, PackageCategory } from "./types.js";
 
 /**
- * Packages known to commonly contain native binaries, native bindings,
- * platform-specific binaries, or require Node.js native APIs.
+ * Node builtins that are definitely unsafe in a Worker runtime.
+ * Anything here (or its bare, non-`node:` variant) forces Lambda.
  */
-export const BLOCKED_NATIVE_PACKAGES = new Set([
-  // Image processing
+export const HARD_BLOCKED_NODE_BUILTINS = new Set([
+  "node:fs",
+  "node:fs/promises",
+  "node:child_process",
+  "node:net",
+  "node:tls",
+  "node:dgram",
+  "node:cluster",
+  "node:worker_threads",
+  "node:vm",
+  "node:module",
+  "node:inspector",
+  "node:repl",
+  "node:tty",
+  "node:http2",
+  "node:perf_hooks",
+  "node:async_hooks",
+]);
+
+/**
+ * Node builtins that are NOT hard-blocked. Many of these have Worker-side
+ * polyfills (buffer, stream, process, ...). They are still reported in the
+ * manifest so a deployer can decide, but by themselves they do not force
+ * Lambda classification. Note: `node:path` is intentionally absent from the
+ * hard-blocked set — it is polyfillable and would otherwise create a huge
+ * number of false positives for every Next.js server route.
+ */
+export const POLYFILLABLE_NODE_BUILTINS = new Set([
+  "node:assert",
+  "node:buffer",
+  "node:console",
+  "node:constants",
+  "node:crypto",
+  "node:diagnostics_channel",
+  "node:dns",
+  "node:events",
+  "node:http",
+  "node:https",
+  "node:os",
+  "node:path",
+  "node:process",
+  "node:punycode",
+  "node:querystring",
+  "node:readline",
+  "node:stream",
+  "node:string_decoder",
+  "node:timers",
+  "node:trace_events",
+  "node:url",
+  "node:util",
+  "node:v8",
+  "node:wasi",
+  "node:zlib",
+]);
+
+/** Every known Node builtin, used for detection and reporting. */
+export const NODE_BUILTINS = new Set([
+  ...HARD_BLOCKED_NODE_BUILTINS,
+  ...POLYFILLABLE_NODE_BUILTINS,
+]);
+
+/**
+ * npm packages that require native binaries or Node-only server APIs.
+ * A route whose closure contains any of these must run on Lambda.
+ */
+export const HARD_BLOCKED_PACKAGES = new Set([
+  // Native image / processing
   "sharp",
-  "@img/sharp",
   "canvas",
-  "canvas-prebuilt",
-  "jimp",
-  "gm",
-  "imagemagick",
-  "imagemagick-native",
-  "node-imagemagick",
-  "pngjs-image",
-
-  // Crypto / password hashing native implementations
-  "bcrypt",
-  "bcryptjs", // safe-ish in many runtimes, but keep conservative if bundled
-  "bcrypt-nodejs",
-  "argon2",
-  "argon2-browser",
-  "scrypt",
-  "scrypt-js",
-  "node-scrypt",
-  "scrypt-kdf",
-  "libsodium",
-  "libsodium-wrappers",
-  "sodium-native",
-  "node-sodium",
-  "crypto",
-  "node-forge",
-
-  // Database native drivers
+  "opencv4nodejs",
+  "onnxruntime-node",
+  "@tensorflow/tfjs-node",
+  // Databases with native engines
   "better-sqlite3",
   "sqlite3",
-  "sqlite",
-  "sqlite3-offline-next",
-  "better-sqlite3-multiple-ciphers",
-  "sqlcipher",
-  "node-sqlite3-wasm",
-  "duckdb",
-  "duckdb-async",
-  "duckdb-node",
   "oracledb",
   "ibm_db",
-  "tedious",
-  "mssql",
-
-  // PostgreSQL native / system integrations
+  "duckdb",
+  "node-gyp",
+  // Prisma (native query engine)
+  "@prisma/client",
+  // PostgreSQL client with native bindings / server sockets
+  "pg",
   "pg-native",
-  "libpq",
-  "postgres-native",
-
-  // MySQL native integrations
-  "mysql2",
-  "mysql-native",
-
-  // Redis native/system bindings
-  "ioredis",
-  "redis-parser",
-
+  // Auth/hashing with native bindings
+  "argon2",
+  "bcrypt",
+  "node-crypton",
   // FFI / native bindings
   "ffi-napi",
   "ref-napi",
-  "ref",
-  "node-ffi",
-  "node-ffi-napi",
-  "bindings",
-  "node-gyp-build",
-  "node-pre-gyp",
-  "prebuild",
-  "prebuild-install",
-
-  // Serial / hardware
+  "ref-array-napi",
+  "ref-struct-napi",
+  "koffi",
+  // Hardware / serial
   "serialport",
-  "@serialport/bindings",
-  "@serialport/bindings-cpp",
-  "usb",
-  "usb-detection",
   "node-hid",
-  "hid",
-  "i2c-bus",
-  "spi-device",
-  "onoff",
-  "bluetooth-hci-socket",
-
-  // Compression / native acceleration
-  "iltorb",
-  "node-zopfli",
-  "lzma-native",
-  "snappy",
-  "node-snappy",
-  "sodium-native",
-
-  // Native XML / parsing
-  "libxmljs",
-  "libxmljs2",
-  "node-expat",
-  "node-libxml",
-
-  // Native image/video/media
-  "ffmpeg-static",
-  "fluent-ffmpeg",
-  "node-ffmpeg",
-  "av",
-  "node-av",
-  "opencv4nodejs",
-  "opencv4nodejs-prebuilt",
-  "node-opencv",
-
-  // PDF/native rendering
-  "pdfium",
-  "pdfkit-native",
+  // Browser automation (bundles Chromium)
   "puppeteer",
   "puppeteer-core",
   "playwright",
   "playwright-core",
+  "selenium-webdriver",
+]);
 
-  // Native ML
+/**
+ * Packages that are frequently (and wrongly) assumed to be Worker-incompatible.
+ * They are NOT auto-blocked. They require actual dependency/bundle analysis —
+ * if the resolved closure is pure JS and esbuild verification passes, they may
+ * legitimately stay on the Worker.
+ */
+export const RISKY_PACKAGES = new Set([
+  "axios",
+  "jose",
+  "bcryptjs",
+  "graphql",
+  "graphql-request",
+  "firebase",
+  "firebase-admin",
+  "drizzle-orm",
+  "typeorm",
+  "knex",
+  "mongoose",
+  "sequelize",
+  "ioredis",
+  "redis",
+  "mqtt",
+  "amqplib",
+  "kafkajs",
+]);
+
+/**
+ * Pure-JS packages that are Worker-safe and must never be blocked.
+ * Kept for documentation and fast-path decisions.
+ */
+export const SAFE_PACKAGES = new Set([
+  "zod",
+  "valibot",
+  "lodash",
+  "lodash-es",
+  "remeda",
+  "date-fns",
+  "dayjs",
+  "nanoid",
+  "uuid",
+  "dequal",
+  "fast-deep-equal",
+  "marked",
+  "markdown-it",
+  "clsx",
+  "tailwind-merge",
+  "class-variance-authority",
+]);
+
+/**
+ * Framework packages that the Worker runtime is expected to provide.
+ * These are externalized for Worker verification and are NOT physically
+ * copied into the Worker artifact; they are recorded in the manifest as
+ * `externalRuntime`. For Lambda they are copied normally.
+ */
+export const FRAMEWORK_EXTERNALS = new Set([
+  "next",
+  "react",
+  "react-dom",
+  "react/jsx-runtime",
+  "react/jsx-dev-runtime",
+  "styled-jsx",
+  "@swc/helpers",
+  "@swc/helpers/_/_interop_require_default",
+  "@swc/helpers/_/_interop_require_wildcard",
+  "client-only",
+  "server-only",
+]);
+
+const BLOCKED_PACKAGE_ALIASES = new Map<string, string>([
+  ["@aws-sdk", "@aws-sdk/*"],
+  ["@supabase/supabase-js", "@supabase/supabase-js"],
+]);
+
+/** Packages that carry native binaries (a superset of hard-blocked native ones). */
+export const NATIVE_PACKAGES = new Set([
+  "sharp",
+  "@prisma/client",
+  "pg",
+  "better-sqlite3",
+  "sqlite3",
+  "canvas",
+  "bcrypt",
+  "argon2",
+  "ffi-napi",
+  "ref-napi",
+  "serialport",
+  "node-hid",
+  "oracledb",
+  "ibm_db",
+  "duckdb",
   "onnxruntime-node",
   "@tensorflow/tfjs-node",
-  "@tensorflow/tfjs-node-gpu",
-  "node-nlp",
-  "sharp-cli",
-
-  // Hardware / system
-  "systeminformation",
-  "node-hid",
-  "usb",
-
-  // Native protobuf / performance modules
-  "bufferutil",
-  "utf-8-validate",
-]);
-
-/* -------------------------------------------------------------------------- */
-/* Node-oriented frameworks / server libraries                                */
-/* -------------------------------------------------------------------------- */
-
-/**
- * These packages are not necessarily native, but are strongly associated
- * with Node.js server environments and should be treated conservatively.
- */
-export const BLOCKED_NODE_PACKAGES = new Set([
-  // Express ecosystem
-  "express",
-  "express-session",
-  "connect",
-  "compression",
-  "serve-static",
-  "cookie-parser",
-  "body-parser",
-  "multer",
-
-  // Node HTTP servers
-  "fastify",
-  "@fastify/node",
-  "@fastify/express",
-  "koa",
-  "@koa/router",
-  "hapi",
-  "@hapi/hapi",
-  "@hapi/catbox",
-  "restify",
-
-  // Node server utilities
-  "http-proxy",
-  "http-proxy-middleware",
-  "http-errors",
-  "proxy-agent",
-  "https-proxy-agent",
-  "http-proxy-agent",
-  "socks-proxy-agent",
-
-  // Node filesystem helpers
-  "fs-extra",
-  "graceful-fs",
-  "memfs",
-  "proper-lockfile",
-  "lockfile",
-  "tmp",
-  "temp",
-  "temp-dir",
-  "file-type",
-
-  // Process managers
-  "pm2",
-  "cluster",
-  "forever",
-  "nodemon",
-
-  // Shell / command execution
-  "execa",
-  "shelljs",
-  "cross-spawn",
-  "spawn-command",
-  "child-process-promise",
-  "shell-quote",
-
-  // Environment/system
-  "env-paths",
-  "os-name",
-  "systeminformation",
-  "process-exists",
-  "pidusage",
-
-  // Native build systems
-  "node-gyp",
-  "node-gyp-build",
-  "node-pre-gyp",
-  "prebuild",
-  "prebuild-install",
-]);
-
-/* -------------------------------------------------------------------------- */
-/* Database packages                                                           */
-/* -------------------------------------------------------------------------- */
-
-export const BLOCKED_DATABASE_PACKAGES = new Set([
-  // PostgreSQL
-  "pg-native",
-  "pg-promise",
-  "postgres",
-  "postgresql",
-  "node-postgres",
-  "libpq",
-
-  // MySQL
-  "mysql",
-  "mysql2",
-  "mysql-native",
-
-  // SQLite
-  "sqlite",
-  "sqlite3",
-  "better-sqlite3",
-  "sql.js",
-  "sqlcipher",
-
-  // MongoDB
-  "mongodb",
-  "mongoose",
-  "mongodb-client-encryption",
-
-  // Redis
-  "redis",
-  "ioredis",
-  "node-redis",
-
-  // MSSQL
-  "mssql",
-  "tedious",
-
-  // Oracle
-  "oracledb",
-
-  // IBM DB
-  "ibm_db",
-
-  // DuckDB
-  "duckdb",
-  "duckdb-async",
-  "duckdb-node",
-
-  // Cassandra
-  "cassandra-driver",
-
-  // Neo4j
-  "neo4j-driver",
-
-  // Elasticsearch Node client
-  "@elastic/elasticsearch",
-]);
-
-/* -------------------------------------------------------------------------- */
-/* Browser automation / desktop / GUI                                         */
-/* -------------------------------------------------------------------------- */
-
-export const BLOCKED_BROWSER_AUTOMATION_PACKAGES = new Set([
+  "opencv4nodejs",
   "puppeteer",
-  "puppeteer-core",
   "playwright",
-  "playwright-core",
-
-  // Selenium
-  "selenium-webdriver",
-
-  // Browser binary management
-  "@puppeteer/browsers",
-  "chromedriver",
-  "geckodriver",
-
-  // Electron
-  "electron",
-  "electron-builder",
-  "electron-packager",
-  "electron-rebuild",
-
-  // Desktop
-  "node-window-manager",
-  "robotjs",
-  "nut.js",
-  "@nut-tree/nut-js",
 ]);
-
-/* -------------------------------------------------------------------------- */
-/* File/archive/compression libraries that commonly depend on Node APIs       */
-/* -------------------------------------------------------------------------- */
-
-export const BLOCKED_FILE_SYSTEM_PACKAGES = new Set([
-  "tar",
-  "tar-fs",
-  "tar-stream",
-  "unzipper",
-  "adm-zip",
-  "extract-zip",
-  "decompress",
-  "decompress-tar",
-  "decompress-unzip",
-  "archiver",
-  "zip-stream",
-  "yauzl",
-  "yazl",
-  "7zip-bin",
-  "node-7z",
-  "file-uri-to-path",
-  "glob",
-  "fast-glob",
-  "globby",
-  "micromatch",
-  "chokidar",
-  "fsevents",
-]);
-
-/* -------------------------------------------------------------------------- */
-/* Native networking / low-level networking                                   */
-/* -------------------------------------------------------------------------- */
-
-export const BLOCKED_NETWORK_PACKAGES = new Set([
-  "net",
-  "tls",
-  "dgram",
-  "dns",
-  "node-fetch-native",
-
-  // Raw socket / native networking
-  "node-net",
-  "node-tls",
-  "socks",
-  "socks-proxy-agent",
-  "ssh2",
-  "ssh2-sftp-client",
-  "node-ssh",
-  "ftp",
-  "basic-ftp",
-
-  // WebSocket implementations that may depend on Node internals
-  "ws",
-  "uWebSockets.js",
-  "uws",
-]);
-
-/* -------------------------------------------------------------------------- */
-/* SSH / Git / filesystem-backed developer tooling                            */
-/* -------------------------------------------------------------------------- */
-
-export const BLOCKED_DEVTOOLS_PACKAGES = new Set([
-  "simple-git",
-  "isomorphic-git", // keep conservative; depends on runtime features
-  "nodegit",
-  "git",
-  "git-http-backend",
-
-  "ssh2",
-  "node-ssh",
-  "ssh2-sftp-client",
-
-  "npm",
-  "pnpm",
-  "yarn",
-  "bun",
-  "corepack",
-
-  "typescript",
-  "ts-node",
-  "tsx",
-  "esbuild",
-  "webpack",
-  "rollup",
-  "vite",
-]);
-
-/* -------------------------------------------------------------------------- */
-/* Cloud SDKs / server-oriented packages that deserve conservative handling   */
-/* -------------------------------------------------------------------------- */
 
 /**
- * NOTE:
- * Do NOT automatically mark every cloud SDK as Node-only.
- * Many SDKs have browser/edge-compatible builds.
- *
- * These are included only where Node-specific functionality is commonly
- * pulled into server-side usage.
+ * Legacy flat list of blocked module names (builtins + packages).
+ * New code should prefer the typed sets above.
  */
-export const BLOCKED_SERVER_SDK_PACKAGES = new Set([
-  // AWS legacy / Node-heavy packages
-  "aws-sdk",
-
-  // AWS credential / filesystem helpers
-  "@aws-sdk/credential-providers",
-  "@aws-sdk/credential-provider-node",
-
-  // Google Cloud Node libraries
-  "@google-cloud/storage",
-  "@google-cloud/pubsub",
-  "@google-cloud/compute",
-  "@google-cloud/functions",
-  "@google-cloud/logging",
-  "@google-cloud/secret-manager",
-  "@google-cloud/bigquery",
-
-  // Azure Node-oriented SDKs
-  "@azure/identity",
-  "@azure/storage-blob",
-  "@azure/storage-file-share",
-  "@azure/storage-queue",
-
-  // Firebase Admin is Node/server-oriented
-  "firebase-admin",
-
-  // Supabase server/admin packages
-  "@supabase/node-fetch",
+export const BLOCKED_MODULES = new Set<string>([
+  ...HARD_BLOCKED_NODE_BUILTINS,
+  ...HARD_BLOCKED_PACKAGES,
+  ...NATIVE_PACKAGES,
 ]);
 
-/* -------------------------------------------------------------------------- */
-/* ORM packages                                                               */
-/* -------------------------------------------------------------------------- */
-
-export const BLOCKED_ORM_PACKAGES = new Set([
-  // Prisma
-  "prisma",
-  "@prisma/client",
-  "@prisma/engines",
-  "@prisma/engines-version",
-
-  // Sequelize
-  "sequelize",
-
-  // TypeORM
-  "typeorm",
-
-  // Knex
-  "knex",
-
-  // Objection
-  "objection",
-
-  // MikroORM
-  "@mikro-orm/core",
-  "@mikro-orm/knex",
-  "@mikro-orm/postgresql",
-  "@mikro-orm/mysql",
-  "@mikro-orm/sqlite",
-
-  // Bookshelf
-  "bookshelf",
-
-  // Waterline
-  "waterline",
-
-  // Drizzle drivers that may pull Node database drivers
-  "drizzle-orm/node-postgres",
-  "drizzle-orm/node-mysql2",
-  "drizzle-orm/better-sqlite3",
+const RISKY_SCOPES = new Set([
+  "@aws-sdk",
+  "@supabase",
+  "@azure",
+  "@google-cloud",
+  "@aws-amplify",
 ]);
-
-/* -------------------------------------------------------------------------- */
-/* Node-specific package patterns                                             */
-/* -------------------------------------------------------------------------- */
 
 /**
- * Packages that are dangerous when imported from a Worker bundle.
- *
- * These are prefixes rather than exact packages.
+ * Returns the "package name" of an import specifier:
+ *   - `next/dist/...`         → `next`
+ *   - `@scope/pkg/sub/path`   → `@scope/pkg`
+ *   - `zod`                   → `zod`
  */
-export const BLOCKED_PACKAGE_PREFIXES = [
-  // Node native addon namespaces
-  "@mapbox/",
-  "@serialport/",
-  "@node-rs/",
-
-  // Node native bindings
-  "node-",
-
-  // Native image libraries
-  "@img/",
-
-  // Prisma engines
-  "@prisma/",
-] as const;
-
-/* -------------------------------------------------------------------------- */
-/* Combined denylist                                                          */
-/* -------------------------------------------------------------------------- */
-
-export const BLOCKED_MODULES = new Set([
-  ...BLOCKED_NODE_BUILTINS,
-  ...BLOCKED_NATIVE_PACKAGES,
-  ...BLOCKED_NODE_PACKAGES,
-  ...BLOCKED_DATABASE_PACKAGES,
-  ...BLOCKED_BROWSER_AUTOMATION_PACKAGES,
-  ...BLOCKED_FILE_SYSTEM_PACKAGES,
-  ...BLOCKED_NETWORK_PACKAGES,
-  ...BLOCKED_DEVTOOLS_PACKAGES,
-  ...BLOCKED_SERVER_SDK_PACKAGES,
-  ...BLOCKED_ORM_PACKAGES,
-]);
-
-/* -------------------------------------------------------------------------- */
-/* Helpers                                                                    */
-/* -------------------------------------------------------------------------- */
-
-export function isBlockedPackage(name: string): boolean {
-  if (BLOCKED_MODULES.has(name)) {
-    return true;
+export function packageNameOf(specifier: string): string {
+  if (specifier.startsWith("@")) {
+    const parts = specifier.split("/");
+    return parts.length >= 2 ? `${parts[0]}/${parts[1]}` : specifier;
   }
-
-  return BLOCKED_PACKAGE_PREFIXES.some(
-    (prefix) => name === prefix.slice(0, -1) || name.startsWith(prefix),
-  );
+  return specifier.split("/")[0];
 }
 
-export function isBlockedBuiltin(name: string): boolean {
-  return BLOCKED_NODE_BUILTINS.has(name);
+export function categoryOf(specifier: string): PackageCategory {
+  const name = packageNameOf(specifier);
+  if (name.startsWith("@") && name.split("/").length >= 2) {
+    const scope = name.split("/")[0];
+    if (RISKY_SCOPES.has(scope)) return "risky";
+  }
+  if (FRAMEWORK_EXTERNALS.has(name)) return "framework";
+  if (HARD_BLOCKED_PACKAGES.has(name) || NATIVE_PACKAGES.has(name)) {
+    return "hard-blocked";
+  }
+  if (RISKY_PACKAGES.has(name) || BLOCKED_PACKAGE_ALIASES.has(name)) {
+    return "risky";
+  }
+  if (SAFE_PACKAGES.has(name)) return "safe";
+  return "risky";
+}
+
+export function isBlockedModule(moduleName: string): boolean {
+  if (moduleName.startsWith("node:")) {
+    return HARD_BLOCKED_NODE_BUILTINS.has(moduleName);
+  }
+  const category = categoryOf(moduleName);
+  return category === "hard-blocked" || category === "native";
+}
+
+export function isBlockedBuiltin(builtin: string): boolean {
+  const normalized = builtin.startsWith("node:") ? builtin : `node:${builtin}`;
+  return HARD_BLOCKED_NODE_BUILTINS.has(normalized);
+}
+
+export function isBlockedPackage(pkg: string): boolean {
+  return categoryOf(pkg) === "hard-blocked";
+}
+
+export function isFrameworkPackage(pkg: string): boolean {
+  return FRAMEWORK_EXTERNALS.has(pkg);
+}
+
+export function isRiskyPackage(pkg: string): boolean {
+  return categoryOf(pkg) === "risky";
+}
+
+export function isSafePackage(pkg: string): boolean {
+  return categoryOf(pkg) === "safe";
 }
 
 /**
- * Returns the reason why a module/package is blocked.
- * Useful for warnings and manifest diagnostics.
+ * Legacy helper kept for compatibility: returns true when the given
+ * builtins/external imports contain a hard-blocked dependency.
  */
-export function getBlockedReason(name: string): string | undefined {
-  if (BLOCKED_NODE_BUILTINS.has(name)) {
-    return "Node.js builtin module is not Worker-compatible";
+export function hasBlockedDependency(
+  nodeBuiltins: string[],
+  externalImports: string[],
+): boolean {
+  for (const builtin of nodeBuiltins) {
+    if (isBlockedBuiltin(builtin)) return true;
   }
-
-  if (BLOCKED_NATIVE_PACKAGES.has(name)) {
-    return "Package commonly uses native Node.js bindings or native binaries";
+  for (const pkg of externalImports) {
+    const name = pkg.startsWith("@")
+      ? pkg.split("/").slice(0, 2).join("/")
+      : pkg.split("/")[0];
+    if (isBlockedModule(name)) return true;
   }
+  return false;
+}
 
-  if (BLOCKED_DATABASE_PACKAGES.has(name)) {
-    return "Database driver/package is treated as Node.js/server-only";
-  }
-
-  if (BLOCKED_BROWSER_AUTOMATION_PACKAGES.has(name)) {
-    return "Browser automation/desktop package requires Node.js or native binaries";
-  }
-
-  if (BLOCKED_FILE_SYSTEM_PACKAGES.has(name)) {
-    return "Package relies on filesystem/archive APIs that are unsafe for Workers";
-  }
-
-  if (BLOCKED_NETWORK_PACKAGES.has(name)) {
-    return "Package relies on Node.js networking/socket APIs";
-  }
-
-  if (BLOCKED_DEVTOOLS_PACKAGES.has(name)) {
-    return "Development/build tooling is not suitable for Worker runtime";
-  }
-
-  if (BLOCKED_SERVER_SDK_PACKAGES.has(name)) {
-    return "Server-oriented SDK may depend on Node.js runtime features";
-  }
-
-  if (BLOCKED_ORM_PACKAGES.has(name)) {
-    return "ORM/database package is treated conservatively as Node.js-only";
-  }
-
-  if (BLOCKED_PACKAGE_PREFIXES.some((prefix) => name.startsWith(prefix))) {
-    return "Package matches a known Node/native package namespace";
-  }
-
+/**
+ * Determines the blocking reason from a route closure's static analysis.
+ * Returns undefined when static analysis finds no blocking cause.
+ */
+export function blockedReasonFromClosure(input: {
+  blockedBuiltins: string[];
+  blockedPackages: string[];
+  nativeFiles: { path: string; package: string }[];
+}): BlockReason | undefined {
+  if (input.blockedBuiltins.length > 0) return "node-builtin";
+  if (input.nativeFiles.length > 0) return "native-addon";
+  if (input.blockedPackages.length > 0) return "blocked-package";
   return undefined;
 }
